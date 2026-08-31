@@ -319,18 +319,6 @@ class headstart_admission
         // check Ninja form data before it is saved
         // add_filter( 'ninja_forms_submit_data',      [$this, 'action_validate_ninja_form_data'] );
 
-        /**
-         * Fix Ninja Forms fatal error during CSV generation on PHP 8+
-         * Intercepts date fields before NF_Fields_Date::filter_csv_value() receives them as arrays.
-         */
-        add_filter( 'ninja_forms_csv_field_date', function( $value, $field ) {
-            if ( is_array( $field ) ) {
-                // Return the formatted or raw date string directly from the array
-                return $field['value'] ?? $field['settings']['value'] ?? $value;
-            }
-            return $value;
-        }, 1, 2 ); // Priority 1 ensures this runs BEFORE Ninja Forms' internal filter (priority 10)
-        
 
         // after a NInja form submission, its data is mapped to a support ticket
         // This is the principal source of data for subsequent actions such as account creation
