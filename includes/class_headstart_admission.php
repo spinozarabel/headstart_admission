@@ -521,335 +521,188 @@ class headstart_admission
      */
     public static function map_ninja_form_to_ticket( array $form_data ): ?int
     {
-        // $form_data['fields']['id']['seetings']['admin_label']
-        // $form_data['fields']['id'][''value']
+        // 1. Build an associative array mapping admin_label => value directly
+        // This avoids array_column index mismatch issues entirely.
+        $ninja_data = array();
 
-        // get the current logged in user
-        // $current_user = wp_get_current_user();
+        if ( ! empty( $form_data['fields'] ) && is_array( $form_data['fields'] ) ) {
+            foreach ( $form_data['fields'] as $field ) {
+                // Check both array structures depending on NF version
+                $admin_label = $field['settings']['admin_label'] ?? $field['admin_label'] ?? '';
+                $val         = $field['settings']['value'] ?? $field['value'] ?? '';
 
-        // get customer's mail
-        // $registered_email   = $current_user->user_email;
+                if ( ! empty( $admin_label ) ) {
+                    $ninja_data[ trim( $admin_label ) ] = $val;
+                }
+            }
+        }
 
-        // Initialize the new ticket values array needed for a new ticket creation
-        $data = [];
+        $data = array();
 
-        // extract the fields array from the Ninja form data
-        $fields_ninjaforms = $form_data['fields'];
+        // Initialize variables to avoid undefined variable fatal errors later
+        $student_first_name  = '';
+        $student_middle_name = '';
+        $student_last_name   = '';
+        $category_name       = '';
 
-        // extract a single column from all fields containing the admin_label key from the Ninja form data
-        $admin_label_array_ninjaforms = array_column(array_column($fields_ninjaforms, 'settings'), 'admin_label');
-
-        // extract the corresponding value array. They both will share the same  numerical index.
-        $value_array_ninjaforms       = array_column(array_column($fields_ninjaforms, 'settings'), 'value');
-
-        // Get the logged in user's ID
         $current_user = wp_get_current_user();
+        $customer     = WPSC_Customer::get_by_email( $current_user->user_email );
 
-        // Check to see if already a customer in Support Candy table
-        $customer = WPSC_Customer::get_by_email( $current_user->user_email  );
+        if ( ! $customer ) {
+            error_log( 'SupportCandy Customer not found for email: ' . $current_user->user_email );
+            return null;
+        }
 
-        
+        // Loop through all custom fields of SupportCandy
+        foreach ( WPSC_Custom_Field::$custom_fields as $cf ) {
 
-        // Loop through all the custom fields of the ticket
-        foreach ( WPSC_Custom_Field::$custom_fields as $cf ):
-
-            // If the CF's field property is not ticket or agentonly, skip. Skip agentonly also????
-            if ( ! in_array( $cf->field, array( 'ticket', 'agentonly' ) )  ) {
+            if ( ! in_array( $cf->field, array( 'ticket', 'agentonly' ), true ) ) {
                 continue;
             }
 
-            // if the CF has default value set then get the default value into the ticket data array
             if ( method_exists( $cf->type, 'get_default_value' ) ) {
                 $data[ $cf->slug ] = $cf->type::get_default_value( $cf );
             }
 
-            // we have nothing to do with the ticket field priority so skip
-            if ($cf->slug == 'priority') {  
+            if ( 'priority' === $cf->slug ) {  
                 continue;     
             }
 
-            // For each of the ticket CF we look at the matching form field using the admin label column
-            // for non-default ticket CFs we match using CF name not CF slug since we cannot set the CF slug for these
-            switch (true):
+            switch ( true ) {
 
-                // This is the admin label for applicant's name usually a parent
-                case ($cf->name == 'customer_name'):
+                case ( 'customer_name' === $cf->name ):
+                    if ( isset( $ninja_data['customer_name'] ) ) {
+                    $customer_name     = $ninja_data['customer_name'];
+                    $customer_name_arr = explode( ' ', $customer_name );
+                    $name              = '';
+                    foreach ( $customer_name_arr as $partname ) {
+                        $name .= ' ' . ucfirst( strtolower( $partname ) );
+                    }
+                    $data[ $cf->slug ] = trim( $name );
+                } else {
+                    error_log( $cf->name . ' -> index not found in Ninja forms value map' );
+                }
+                break;
 
-                    // look for array index in the ninja forms field's admin label for this
-                    $key = array_search('customer_name', $admin_label_array_ninjaforms);
+                case ( 'category' === $cf->slug ):
+                    if ( isset( $ninja_data['ticket_category'] ) ) {
+                        $category_name     = $ninja_data['ticket_category'];
+                        $category_id       = self::get_category_id_given_name( $category_name );
+                        // SupportCandy requires integer for category
+                        $data[ $cf->slug ] = (int) $category_id;
+                    } else {
+                        error_log( 'ticket_category -> index not found in Ninja forms value map' );
+                    }
+                    break;
 
-                    if ($key !== false)
-                    {
-                        // get the form-captured field value for customer-name
-                        $customer_name = $value_array_ninjaforms[$key];
+                case ( 'customer_email' === $cf->name ):
+                    $data[ $cf->slug ] = $customer->email;
+                    break;
 
-                        // We want to format it with 1st letter capital and rest in lowercase. Split the name using space
-                        $customer_name_arr = explode(" ", $customer_name);
-
-                        $name = "";
-                        foreach ($customer_name_arr as $partname)
-                        {
-                            // Each subname such as First, Middle, and Last will have 1st letter Capitalized
-                            $name .= " " . ucfirst(strtolower($partname));
+                case ( 'headstart-email' === $cf->name ):
+                    if ( isset( $ninja_data['primary-email'] ) ) {
+                        $primary_email = $ninja_data['primary-email'];
+                        if ( false !== stripos( $primary_email, '@headstart.edu.in' ) ) {
+                            $data[ $cf->slug ] = $primary_email;
+                        } else {
+                            error_log( 'primary email in application form does NOT contain @headstart.edu.in' );
                         }
-
-                        // remove extraneous spaces at beginning and or end and index in data array by the CF slug always
-                        // The slug will have some strange characters and so we will just use as is.
-                        $data[$cf->slug]= trim($name);
+                    } else {
+                        error_log( 'index for: primary-email not found in Ninja forms value map' );
                     }
-                    else
-                    {
-                        error_log($cf->name . " -> index not found in Ninja forms value array");
-                    }
-                break;
+                    break;
 
-                // ticket's custom field 'category is a default predefined field and slug can be used here
-                // Thhere should be a hidden field in the Ninja forms with values corresponding to Support Candy Settings
-                case ($cf->slug == 'category'):
+                case ( 'subject' === $cf->slug ):
+                case ( 'description' === $cf->slug ):
+                        $data[ $cf->slug ] = 'Admission';
+                    break;
 
-                    // look for the mapping slug in the ninja forms field's admin label
-                    $key                = array_search('ticket_category', $admin_label_array_ninjaforms);
-
-                    if ($key !== false)
-                    {
-                        // extract the ticket category usually a hidden field in the form
-                        $category_name      = $value_array_ninjaforms[$key];
-
-                        // now to get the category id using the name we got from the ninja form
-                        $category_id        = self::get_category_id_given_name( $category_name) ;
-
-                        // we give the category's id, not its name, when we create the ticket.
-                        $data[$cf->slug]    = $category_id;
-                    }
-                    else
-                    {
-                        error_log('ticket_category' . " -> index not found in Ninja forms value array");
-                    }
-
-                    
-
-                break;
-
-                // customer email in ticket maps to the user registered email.
-                // This is done so that all communication is on the registered email.
-                // This is not derived from the Ninja form but from the user object itself
-                // This was a legacy feature since email was not included as part of ticket in ver1 of support candy
-                // But we are keeing the feature for legacy and continuity
-                case ($cf->name == 'customer_email'):
-
-                    // look for the mapping slug in the ninja forms field's admin label
-                    // $key = array_search('primary-email', $admin_label_array_ninjaforms);
-
-                    // capture this into a local variable for later use to extract customer information
-                    // $customer_registered_email = $value_array_ninjaforms[$key];
-
-                    $data[$cf->slug] = $customer->email;
-
-                break;
-
-
-                // map the ticket field 'headstart-email' to Ninja forms 'primary-email' field
-                // Only if it contains headstart domain. If not leave it undefined
-                case ($cf->name == 'headstart-email'):
-
-                    // look for the mapping slug in the ninja forms field's admin label
-                    $key = array_search('primary-email', $admin_label_array_ninjaforms);
-
-                    if ($key !== false)
-                    {
-                        // get the value of the primary email from the application.
-                        $primary_email_ninja_form = $value_array_ninjaforms[$key];
-
-                        // Check if mail contains headstart domain
-                        if ( stripos( $primary_email_ninja_form, '@headstart.edu.in') !== false )
-                        {
-                            // the given email DOES contain  the headstart domain, so we can capture it
-                            $data[$cf->slug]= $value_array_ninjaforms[$key];
-                        }
-                        else
-                        {
-                            error_log( "primary email in application form does NOT contain @headstart.edu.in" );
-                        }
-                    }
-                    else
-                    {
-                        error_log( "index for: primary-email, not found in Ninja forms value array" );
-                    }
-                break;
-
-
-                // the ticket custom field 'subject' is fixed to 'Admission'
-                case ($cf->slug == 'subject'):
-
-                    // default for all users
-                    $data[$cf->slug]= 'Admission';
-
-                break;
-
-                // Description is a fixed string 'Admission' for all tickets
-                case ($cf->slug == 'description'):
-
-                    // default for all users
-                    $data[$cf->slug]= 'Admission';
-
-                break;
-
-                    // ensure that the address does not contain forbidden characters.
-                    // replace a / with a - otherwise the ticket creation will  result in error
-                case ($cf->name == 'residential-address'):
-                    // set the search and replace strings
-                    $find       = "/";
-                    $replace    = "-";
-
-                    // look for the mapping slug in the ninja forms field's admin label
-                    $key = array_search('residential-address', $admin_label_array_ninjaforms);
-
-                    if ($key !== false)
-                    {
-                        // get the custmeer entered residential address from the form data array using the key
-                        $value    = $value_array_ninjaforms[$key];
-
-                        // set the value for the ticket custom field by search and replace of potential bad character "/"
-                        $data[$cf->slug] = str_ireplace($find, $replace, $value);
-                    }
-                    else
-                    {
-                        error_log($cf->name  . " -> index not found in Ninja forms value array");
+                case ( 'residential-address' === $cf->name ):
+                    if ( isset( $ninja_data['residential-address'] ) ) {
+                        $data[ $cf->slug ] = str_ireplace( '/', '-', $ninja_data['residential-address'] );
+                    } else {
+                        error_log( $cf->name . ' -> index not found in Ninja forms value map' );
                     } 
-                break;
+                    break;
 
-
-                case ($cf->name == 'student-first-name'):
-                    // look for the mapping slug in the ninja forms field's admin label
-                    $key = array_search('student-first-name', $admin_label_array_ninjaforms);
-
-                    if ($key !== false)
-                    {
-                        // get the custmeer entered students first name
-                        $value    = $value_array_ninjaforms[$key];
-
-                        // Convert to lowercase and Capitalize the 1st letter
-                        $data[$cf->slug] = ucfirst(strtolower($value));
-
-                        // capture student's name for use in description later on
-                        $student_first_name = $data[$cf->slug];
+                case ( 'student-first-name' === $cf->name ):
+                    if ( isset( $ninja_data['student-first-name'] ) ) {
+                        $data[ $cf->slug ]  = ucfirst( strtolower( $ninja_data['student-first-name'] ) );
+                        $student_first_name = $data[ $cf->slug ];
+                    } else {
+                        error_log( $cf->name . ' -> index not found in Ninja forms value map' );
                     }
-                    else
-                    {
-                        error_log($cf->name . " -> index not found in Ninja forms value array");
+                    break;
+
+                case ( 'student-middle-name' === $cf->name ):
+                    if ( isset( $ninja_data['student-middle-name'] ) ) {
+                        $data[ $cf->slug ]   = ucfirst( strtolower( $ninja_data['student-middle-name'] ) );
+                        $student_middle_name = $data[ $cf->slug ];
+                    } else {
+                        error_log( $cf->name . ' -> index not found in Ninja forms value map' );
                     }
-                break;
+                    break;
 
-
-                case ($cf->name == 'student-middle-name'):
-                    // look for the mapping slug in the ninja forms field's admin label
-                    $key = array_search('student-middle-name', $admin_label_array_ninjaforms);
-
-                    if ($key !== false)
-                    {
-                        // get the custmeer entered students first name
-                        $value    = $value_array_ninjaforms[$key];
-
-                        // Convert to lowercase and Capitalize the 1st letter
-                        $data[$cf->slug] = ucfirst(strtolower($value));
-
-                        // capture student's name for use in description later on
-                        $student_middle_name = $data[$cf->slug];
+                case ( 'student-last-name' === $cf->name ):
+                    if ( isset( $ninja_data['student-last-name'] ) ) {
+                        $data[ $cf->slug ]  = ucfirst( strtolower( $ninja_data['student-last-name'] ) );
+                        $student_last_name = $data[ $cf->slug ];
+                    } else {
+                        error_log( $cf->name . ' -> index not found in Ninja forms value map' );
                     }
-                    else
-                    {
-                        error_log($cf->name . " -> index not found in Ninja forms value array");
-                    }
-                break;
-
-                case ($cf->name == 'student-last-name'):
-                    // look for the mapping slug in the ninja forms field's admin label
-                    $key = array_search('student-last-name', $admin_label_array_ninjaforms);
-
-                    if ($key !== false)
-                    {
-                        // get the custmeer entered students first name
-                        $value    = $value_array_ninjaforms[$key];
-
-                        // Convert to lowercase and Capitalize the 1st letter
-                        $data[$cf->slug] = ucfirst(strtolower($value));
-
-                        // capture student's name for use in description later on
-                        $student_last_name = $data[$cf->slug];
-                    }
-                    else
-                    {
-                        error_log($cf->name . " -> index not found in Ninja forms value array");
-                    }
-                break;
-
+                    break;
 
                 default:
-
-                    // from here on  we do not need to manipulate the value so this is generic
-                    // look for the mapping name in the ninja forms field's admin label
-                    $key = array_search($cf->name, $admin_label_array_ninjaforms);
-
-                    if ($key !== false)
-                    {
-                        // no need to manipulate, just index using slug and populate the value extracted
-                        $data[$cf->slug]= $value_array_ninjaforms[$key];
+                    if ( isset( $ninja_data[ $cf->name ] ) ) {
+                        $val = $ninja_data[ $cf->name ];
+                    
+                    // SupportCandy custom field type safety:
+                    // Convert array values or ensure non-null values for SupportCandy fields
+                        if ( is_array( $val ) ) {
+                            $data[ $cf->slug ] = array_map( 'intval', $val );
+                        } else {
+                            $data[ $cf->slug ] = ( string ) $val;
+                        }
+                    } else {
+                        error_log( $cf->name . ' -> index not found in Ninja forms value map' );
                     }
-                    else
-                    {
-                        error_log($cf->name . " -> index not found in Ninja forms value array");
-                    }
-                break;
+                    break;
 
-            endswitch;          // end switching throgh the ticket fields looking for a match
+            }
 
-        endforeach;             // finish looping through the ticket fields for mapping Ninja form data to ticket
+        }
 
-        // set the cf field 'customer' of the ticket to the customer id as required
-        $data['customer'] = $customer->id;
+        $data['customer'] = (int) $customer->id;
 
-        $student_full_name = $student_first_name . ' ' . $student_middle_name . ' ' . $student_last_name;
+        $student_full_name = trim( $student_first_name . ' ' . $student_middle_name . ' ' . $student_last_name );
 
-        // Seperate the 'description' custom field from $data as required by Support Candy
-        $description = "Application for Admission of " . $student_full_name . 'to: ' . $category_name;
+        $description = 'Application for Admission of ' . $student_full_name . ' to: ' . $category_name;
         unset( $data['description'] );
 
-        // Seperate description attachments from $data.
-        $description_attachments = $data['description_attachments'] ?? "";
+        $description_attachments = $data['description_attachments'] ?? '';
         unset( $data['description_attachments'] );
 
         $data['last_reply_on'] = ( new DateTime() )->format( 'Y-m-d H:i:s' );
+        $data['source']        = 'MA_HSA_plugin';
+        $data['ip_address']    = WPSC_DF_IP_Address::get_current_user_ip();
+        $data['browser']       = WPSC_DF_Browser::get_user_browser();
+        $data['os']            = WPSC_DF_OS::get_user_platform();
+        $data['user_type']     = 'registered';
 
-        $data['source']     = 'MA_HSA_plugin';
-	    $data['ip_address'] = WPSC_DF_IP_Address::get_current_user_ip();
-	    $data['browser']    = WPSC_DF_Browser::get_user_browser();
-	    $data['os']         = WPSC_DF_OS::get_user_platform();
-
-        // Assign an agent based on category or whichever algorithm that we may choose later on
-        // $data['assigned_agent'] = 2;    // permamantly assigned too Simran
-        $data['user_type'] = 'registered';
-
-        // we have all the necessary ticket fields filled from the Ninja forms, now we can create a new ticket
+        // Create the ticket
         $ticket = WPSC_Ticket::insert( $data );
 
-        if ( ! $ticket ) 
-        {
-            error_log('Could not create a new SC ticket from Ninja form submission, Investigate');
-
+        if ( ! $ticket ) {
+            error_log( 'Could not create a new SC ticket from Ninja form submission, Investigate' );
             return null;
         }
-        else 
-        {
-            error_log('A new SC ticket created from Ninja form for Customer ID:' . $customer->id . 
-                                                                                ' and Ticket ID:' . $ticket->id);
-        }
 
-        // if we get here it means that the new ticket was successfully created. Lets add the thread and finish
+        error_log( 'A new SC ticket created from Ninja form for Customer ID:' . $customer->id . ' and Ticket ID:' . $ticket->id );
+
         $ticket->last_reply_by = $ticket->customer->id;
-		$ticket->save();
+        $ticket->save();
 
-        // Create report thread.
-        $thread = WPSC_Thread::insert(
+        WPSC_Thread::insert(
             array(
                 'ticket'      => $ticket->id,
                 'customer'    => $ticket->customer->id,
@@ -860,10 +713,7 @@ class headstart_admission
             )
         );
 
-        // Create an action hook for just after creation of a new ticket  in case the SC plugin needs to do something here
         do_action( 'wpsc_create_new_ticket', $ticket );
-
-        // WPSC_EN_Create_Ticket::process_event( $ticket );
 
         return $ticket->id;
     }
